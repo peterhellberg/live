@@ -74,31 +74,31 @@ func run(args []string) error {
 	return http.ListenAndServe(addr, nil)
 }
 
-func watch(root string, r *reloader, duration time.Duration, ignored []string) error {
+func watchDirRecursive(w *fsnotify.Watcher, root string, ignored []string) {
+	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+
+		if isIgnored(path, ignored) {
+			return filepath.SkipDir
+		}
+
+		if d.IsDir() {
+			_ = w.Add(path)
+		}
+
+		return nil
+	})
+}
+
+func watch(root string, r *reloader, delay time.Duration, ignored []string) error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return err
 	}
 
-	if err := filepath.WalkDir(root,
-		func(path string, d os.DirEntry, err error) error {
-			if err != nil {
-				return nil
-			}
-
-			if isIgnored(path, ignored) {
-				return filepath.SkipDir
-			}
-
-			if d.IsDir() {
-				watcher.Add(path)
-			}
-
-			return nil
-		},
-	); err != nil {
-		return err
-	}
+	watchDirRecursive(watcher, root, ignored)
 
 	go func() {
 		var timer *time.Timer
@@ -108,9 +108,7 @@ func watch(root string, r *reloader, duration time.Duration, ignored []string) e
 				timer.Stop()
 			}
 
-			timer = time.AfterFunc(duration, func() {
-				r.notify()
-			})
+			timer = time.AfterFunc(delay, r.notify)
 		}
 
 		for {
@@ -120,11 +118,13 @@ func watch(root string, r *reloader, duration time.Duration, ignored []string) e
 					continue
 				}
 
+				if ev.Op&(fsnotify.Remove|fsnotify.Rename) != 0 {
+					watchDirRecursive(watcher, root, ignored)
+				}
+
 				if ev.Op&fsnotify.Create != 0 {
 					if info, err := os.Stat(ev.Name); err == nil && info.IsDir() {
-						if !isIgnored(ev.Name, ignored) {
-							watcher.Add(ev.Name)
-						}
+						watchDirRecursive(watcher, ev.Name, ignored)
 					}
 				}
 
@@ -248,17 +248,34 @@ func (r *reloader) notify() {
 
 func injectReload(html []byte) []byte {
 	snippet := []byte(`<script>
-    const es = new EventSource("/__livereload");
-    es.onmessage = () => location.reload();
-</script>`)
+    if (window.fetch) {
+        const originalFetch = window.fetch;
+        window.fetch = (...args) => {
+            if (typeof args[0] === "string" && args[0].endsWith(".wasm")) {
+                args[0] = args[0].split("?")[0] + "?_=" + Date.now();
+            }
+            return originalFetch(...args);
+        };
+    }
 
-	if bytes.Contains(html, []byte("</body>")) {
-		return bytes.Replace(
-			html,
-			[]byte("</body>"),
-			append(snippet, []byte("</body>")...),
-			1,
-		)
+    const es = new EventSource("/__livereload");
+
+    es.onmessage = (event) => {
+        if (event.data !== "reload") return;
+    
+        const now = Date.now();
+    
+        document.querySelectorAll("script[src], link[rel=stylesheet]").forEach(el => {
+            if (el.src) el.src = el.src.split("?")[0] + "?_=" + now;
+            if (el.href) el.href = el.href.split("?")[0] + "?_=" + now;
+        });
+    
+        location.reload();
+    };
+  </script>`)
+
+	if bytes.Contains(html, []byte("<head>")) {
+		return bytes.Replace(html, []byte("<head>"), append([]byte("<head>"), snippet...), 1)
 	}
 
 	return append(html, snippet...)
