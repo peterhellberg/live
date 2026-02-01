@@ -17,11 +17,11 @@ import (
 )
 
 type Config struct {
-	dir      string
-	port     int
-	debounce time.Duration
-	exclude  string
-	open     bool
+	root   string
+	port   int
+	wait   time.Duration
+	ignore string
+	open   bool
 }
 
 func main() {
@@ -36,10 +36,10 @@ func parse(args []string) (Config, error) {
 
 	flags := flag.NewFlagSet(args[0], flag.ExitOnError)
 
-	flags.StringVar(&cfg.dir, "dir", ".", "directory to serve")
+	flags.StringVar(&cfg.root, "root", ".", "directory to serve")
 	flags.IntVar(&cfg.port, "port", 9222, "port to listen on")
-	flags.DurationVar(&cfg.debounce, "debounce", 100*time.Millisecond, "reload debounce duration (e.g. 50ms, 200ms)")
-	flags.StringVar(&cfg.exclude, "exclude", ".git,node_modules,.zig-cache", "comma-separated list of path substrings to ignore")
+	flags.DurationVar(&cfg.wait, "wait", 100*time.Millisecond, "reload wait duration (e.g. 50ms, 200ms)")
+	flags.StringVar(&cfg.ignore, "ignore", ".git,.zig-cache,node_modules", "comma-separated list of path substrings to ignore")
 	flags.BoolVar(&cfg.open, "open", true, "automatically open browser")
 
 	return cfg, flags.Parse(args[1:])
@@ -52,21 +52,20 @@ func run(args []string) error {
 	}
 
 	var (
-		root     = newRootFunc(cfg)
-		excludes = strings.Split(cfg.exclude, ",")
-		addr     = fmt.Sprintf(":%d", cfg.port)
-		rawurl   = "http://localhost" + addr
-		r        = newReloader()
+		ignored = strings.Split(cfg.ignore, ",")
+		addr    = fmt.Sprintf(":%d", cfg.port)
+		rawurl  = "http://localhost" + addr
+		r       = newReloader()
 	)
 
-	if err := watch(cfg.dir, r, cfg.debounce, excludes); err != nil {
+	if err := watch(cfg.root, r, cfg.wait, ignored); err != nil {
 		return err
 	}
 
 	http.HandleFunc("/__livereload", r.endpoint)
-	http.HandleFunc("/", root)
+	http.HandleFunc("/", newRootFunc(cfg))
 
-	fmt.Printf("Live %s at %s (debounce=%s)\n", cfg.dir, rawurl, cfg.debounce)
+	fmt.Printf("⟳ %s %q at %s\n", cfg.wait, cfg.root, rawurl)
 
 	if cfg.open {
 		go openBrowser(rawurl)
@@ -75,7 +74,7 @@ func run(args []string) error {
 	return http.ListenAndServe(addr, nil)
 }
 
-func watch(root string, r *reloader, duration time.Duration, excludes []string) error {
+func watch(root string, r *reloader, duration time.Duration, ignored []string) error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return err
@@ -87,7 +86,7 @@ func watch(root string, r *reloader, duration time.Duration, excludes []string) 
 				return nil
 			}
 
-			if isExcluded(path, excludes) {
+			if isIgnored(path, ignored) {
 				return filepath.SkipDir
 			}
 
@@ -117,13 +116,13 @@ func watch(root string, r *reloader, duration time.Duration, excludes []string) 
 		for {
 			select {
 			case ev := <-watcher.Events:
-				if isExcluded(ev.Name, excludes) {
+				if isIgnored(ev.Name, ignored) {
 					continue
 				}
 
 				if ev.Op&fsnotify.Create != 0 {
 					if info, err := os.Stat(ev.Name); err == nil && info.IsDir() {
-						if !isExcluded(ev.Name, excludes) {
+						if !isIgnored(ev.Name, ignored) {
 							watcher.Add(ev.Name)
 						}
 					}
@@ -140,10 +139,10 @@ func watch(root string, r *reloader, duration time.Duration, excludes []string) 
 }
 
 func newRootFunc(cfg Config) func(http.ResponseWriter, *http.Request) {
-	fs := http.FileServer(http.Dir(cfg.dir))
+	fs := http.FileServer(http.Dir(cfg.root))
 
 	return func(w http.ResponseWriter, req *http.Request) {
-		path := filepath.Join(cfg.dir, req.URL.Path)
+		path := filepath.Join(cfg.root, req.URL.Path)
 
 		info, err := os.Stat(path)
 		if err == nil && info.IsDir() {
@@ -265,8 +264,8 @@ func injectReload(html []byte) []byte {
 	return append(html, snippet...)
 }
 
-func isExcluded(path string, excludes []string) bool {
-	for _, ex := range excludes {
+func isIgnored(path string, ignored []string) bool {
+	for _, ex := range ignored {
 		if ex != "" && strings.Contains(path, ex) {
 			return true
 		}

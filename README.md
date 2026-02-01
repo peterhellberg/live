@@ -20,14 +20,14 @@ go install github.com/peterhellberg/live@latest
 ```console
 $ live -h
 Usage of live:
-  -debounce duration
-        reload debounce duration (e.g. 50ms, 200ms) (default 100ms)
-  -dir string
-        directory to serve (default ".")
-  -exclude string
-        comma-separated list of path substrings to ignore (default ".git,node_modules,.zig-cache")
+  -ignore string
+        comma-separated list of path substrings to ignore (default ".git,.zig-cache,node_modules")
   -open
         automatically open browser (default true)
   -port int
         port to listen on (default 9222)
+  -root string
+        directory to serve (default ".")
+  -wait duration
+        reload wait duration (e.g. 50ms, 200ms) (default 100ms)
 ```
