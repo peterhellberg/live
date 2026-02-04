@@ -20,12 +20,12 @@ go install github.com/peterhellberg/live@latest
 ```console
 $ live -h
 Usage of live:
+  -addr string
+        addr to listen on (default "0.0.0.0:9222")
   -ignore string
         comma-separated list of path substrings to ignore (default ".git,.zig-cache,node_modules")
   -open
         automatically open browser (default true)
-  -port int
-        port to listen on (default 9222)
   -root string
         directory to serve (default ".")
   -wait duration

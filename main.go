@@ -18,7 +18,7 @@ import (
 
 type Config struct {
 	root   string
-	port   int
+	addr   string
 	wait   time.Duration
 	ignore string
 	open   bool
@@ -37,7 +37,7 @@ func parse(args []string) (Config, error) {
 	flags := flag.NewFlagSet(args[0], flag.ExitOnError)
 
 	flags.StringVar(&cfg.root, "root", ".", "directory to serve")
-	flags.IntVar(&cfg.port, "port", 9222, "port to listen on")
+	flags.StringVar(&cfg.addr, "addr", "0.0.0.0:9222", "addr to listen on")
 	flags.DurationVar(&cfg.wait, "wait", 100*time.Millisecond, "reload wait duration (e.g. 50ms, 200ms)")
 	flags.StringVar(&cfg.ignore, "ignore", ".git,.zig-cache,node_modules", "comma-separated list of path substrings to ignore")
 	flags.BoolVar(&cfg.open, "open", true, "automatically open browser")
@@ -53,8 +53,7 @@ func run(args []string) error {
 
 	var (
 		ignored = strings.Split(cfg.ignore, ",")
-		addr    = fmt.Sprintf(":%d", cfg.port)
-		rawurl  = "http://localhost" + addr
+		rawurl  = "http://" + cfg.addr
 		r       = newReloader()
 	)
 
@@ -71,7 +70,7 @@ func run(args []string) error {
 		go openBrowser(rawurl)
 	}
 
-	return http.ListenAndServe(addr, nil)
+	return http.ListenAndServe(cfg.addr, nil)
 }
 
 type watchState struct {
