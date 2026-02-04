@@ -74,6 +74,42 @@ func run(args []string) error {
 	return http.ListenAndServe(addr, nil)
 }
 
+type watchState struct {
+	mu      sync.Mutex
+	lastMod map[string]time.Time
+	timer   *time.Timer
+}
+
+func newWatchState() *watchState {
+	return &watchState{
+		lastMod: make(map[string]time.Time),
+	}
+}
+
+func (ws *watchState) trigger(path string, delay time.Duration, r *reloader) {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return
+	}
+
+	mod := info.ModTime()
+
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+
+	if last, ok := ws.lastMod[path]; ok && !mod.After(last) {
+		return
+	}
+
+	ws.lastMod[path] = mod
+
+	if ws.timer != nil {
+		ws.timer.Stop()
+	}
+
+	ws.timer = time.AfterFunc(delay, r.notify)
+}
+
 func watchDirRecursive(w *fsnotify.Watcher, root string, ignored []string) {
 	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -81,7 +117,11 @@ func watchDirRecursive(w *fsnotify.Watcher, root string, ignored []string) {
 		}
 
 		if isIgnored(path, ignored) {
-			return filepath.SkipDir
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+
+			return nil
 		}
 
 		if d.IsDir() {
@@ -100,26 +140,14 @@ func watch(root string, r *reloader, delay time.Duration, ignored []string) erro
 
 	watchDirRecursive(watcher, root, ignored)
 
+	ws := newWatchState()
+
 	go func() {
-		var timer *time.Timer
-
-		trigger := func() {
-			if timer != nil {
-				timer.Stop()
-			}
-
-			timer = time.AfterFunc(delay, r.notify)
-		}
-
 		for {
 			select {
 			case ev := <-watcher.Events:
 				if isIgnored(ev.Name, ignored) {
 					continue
-				}
-
-				if ev.Op&(fsnotify.Remove|fsnotify.Rename) != 0 {
-					watchDirRecursive(watcher, root, ignored)
 				}
 
 				if ev.Op&fsnotify.Create != 0 {
@@ -128,7 +156,7 @@ func watch(root string, r *reloader, delay time.Duration, ignored []string) erro
 					}
 				}
 
-				trigger()
+				ws.trigger(ev.Name, delay, r)
 			case err := <-watcher.Errors:
 				fmt.Println("watch error:", err)
 			}
@@ -248,31 +276,7 @@ func (r *reloader) notify() {
 
 func injectReload(html []byte) []byte {
 	snippet := []byte(`<script>
-    if (window.fetch) {
-        const originalFetch = window.fetch;
-        window.fetch = (...args) => {
-            if (typeof args[0] === "string" && args[0].endsWith(".wasm")) {
-                args[0] = args[0].split("?")[0] + "?_=" + Date.now();
-            }
-            return originalFetch(...args);
-        };
-    }
-
-    const es = new EventSource("/__livereload");
-
-    es.onmessage = (event) => {
-        if (event.data !== "reload") return;
-    
-        const now = Date.now();
-    
-        document.querySelectorAll("script[src], link[rel=stylesheet]").forEach(el => {
-            if (el.src) el.src = el.src.split("?")[0] + "?_=" + now;
-            if (el.href) el.href = el.href.split("?")[0] + "?_=" + now;
-        });
-    
-        location.reload();
-    };
-  </script>`)
+if(window.fetch){const o=window.fetch;window.fetch=(...a)=>{if(typeof a[0]==="string"&&a[0].endsWith(".wasm"))a[0]=a[0].split("?")[0]+"?_="+Date.now();return o(...a)}};const e=new EventSource("/__livereload");e.onmessage=(ev)=>{if(ev.data!=="reload")return;const n=Date.now();document.querySelectorAll("script[src], link[rel=stylesheet]").forEach(el=>{if(el.src)el.src=el.src.split("?")[0]+"?_="+n;if(el.href)el.href=el.href.split("?")[0]+"?_="+n}),location.reload()};</script>`)
 
 	if bytes.Contains(html, []byte("<head>")) {
 		return bytes.Replace(html, []byte("<head>"), append([]byte("<head>"), snippet...), 1)
